@@ -1,0 +1,123 @@
+require("dotenv").config()
+const express = require("express")
+const cors = require("cors")
+const { MongoClient, ObjectId } = require("mongodb")
+const bcrypt = require("bcryptjs")
+const jwt = require("jsonwebtoken")
+
+/* ---------- 1. DB Setup ---------- */
+let db
+const client = new MongoClient(process.env.MONGO_URI)
+async function connectDB() {
+  await client.connect()
+  db = client.db("portfolioDB")
+  console.log("✅ MongoDB connected")
+}
+connectDB().catch(console.error)
+
+/* ---------- 2. App ---------- */
+const app = express()
+app.use(cors())
+app.use(express.json())
+
+/* ---------- 3. Auth Middleware ---------- */
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader) return res.status(401).json({ error: "No token" })
+
+  const token = authHeader.split(" ")[1]
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ error: "Invalid token" })
+    req.user = decoded
+    next()
+  })
+}
+
+/* ---------- 4. Auth Routes ---------- */
+
+// Register
+app.post("/api/auth/register", async (req, res) => {
+  const { email, password } = req.body
+  const existing = await db.collection("users").findOne({ email })
+  if (existing) return res.status(409).json({ error: "User already exists" })
+
+  const hashed = await bcrypt.hash(password, 10)
+  await db.collection("users").insertOne({ email, password: hashed })
+  res.json({ message: "User registered" })
+})
+
+// Login
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body
+  const user = await db.collection("users").findOne({ email })
+  if (!user) return res.status(404).json({ error: "User not found" })
+
+  const match = await bcrypt.compare(password, user.password)
+  if (!match) return res.status(401).json({ error: "Invalid password" })
+
+  const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "2d" })
+  res.json({ token })
+})
+
+/* ---------- 5. Hero Routes ---------- */
+app.get("/api/hero", async (_, res) => {
+  const hero = await db.collection("hero").findOne({})
+  res.json(hero || {})
+})
+
+app.put("/api/hero", verifyToken, async (req, res) => {
+  const { name, brief, image, resume } = req.body
+  await db.collection("hero").deleteMany({})
+  await db.collection("hero").insertOne({ name, brief, image, resume })
+  res.json({ message: "Hero updated" })
+})
+
+/* ---------- 6. Skills Routes ---------- */
+app.get("/api/skills", async (_, res) => {
+  const skills = await db.collection("skills").find().toArray()
+  res.json(skills)
+})
+
+app.post("/api/skills", verifyToken, async (req, res) => {
+  const { name, icon } = req.body
+  await db.collection("skills").insertOne({ name, icon })
+  res.json({ message: "Skill added" })
+})
+
+app.delete("/api/skills/:id", verifyToken, async (req, res) => {
+  await db.collection("skills").deleteOne({ _id: new ObjectId(req.params.id) })
+  res.json({ message: "Skill deleted" })
+})
+
+/* ---------- 7. Projects Routes ---------- */
+app.get("/api/projects", async (_, res) => {
+  const projects = await db
+    .collection("projects")
+    .find()
+    .sort({ order: 1 })
+    .toArray()
+  res.json(projects)
+})
+
+app.post("/api/projects", verifyToken, async (req, res) => {
+  const { title, description, image, github, live, order, stack } = req.body
+  await db.collection("projects").insertOne({
+    title,
+    description,
+    image,
+    github,
+    live,
+    order: Number(order),
+    stack,
+  })
+  res.json({ message: "Project added" })
+})
+
+app.delete("/api/projects/:id", verifyToken, async (req, res) => {
+  await db.collection("projects").deleteOne({ _id: new ObjectId(req.params.id) })
+  res.json({ message: "Project deleted" })
+})
+
+/* ---------- 8. Start ---------- */
+const PORT = process.env.PORT || 5000
+app.listen(PORT, () => console.log(`🚀 Backend running on http://localhost:${PORT}`))
