@@ -1,9 +1,16 @@
 require("dotenv").config()
 const express = require("express")
 const cors = require("cors")
-const { MongoClient, ObjectId } = require("mongodb")
+const { MongoClient, ObjectId, GridFSBucket } = require("mongodb")
 const bcrypt = require("bcryptjs")
 const jwt = require("jsonwebtoken")
+
+// multer setup
+const multer = require("multer")
+
+const upload = multer({ storage: multer.memoryStorage() }) // store in memory
+const getBucket = () => new GridFSBucket(db, { bucketName: "images" })
+
 
 /* ---------- 1. DB Setup ---------- */
 let db
@@ -32,6 +39,37 @@ const verifyToken = (req, res, next) => {
     next()
   })
 }
+
+
+// image upload
+
+
+// Upload a single image (used for hero and skills)
+app.post("/api/upload", verifyToken, upload.single("image"), async (req, res) => {
+  try {
+    const file = req.file
+    if (!file) return res.status(400).json({ error: "No image file provided" })
+
+    const fileId = new ObjectId()
+    await getBucket().openUploadStreamWithId(fileId, file.originalname).end(file.buffer)
+
+    res.json({ fileId: fileId.toString() })
+  } catch (err) {
+    console.error("Upload error:", err)
+    res.status(500).json({ error: "Upload failed" })
+  }
+})
+
+app.post("/upload", upload.single("image"), async (req, res) => {
+  const file = req.file
+  if (!file) return res.status(400).json({ error: "No image file provided" })
+
+  const fileId = new ObjectId()
+  await getBucket().openUploadStreamWithId(fileId, file.originalname).end(file.buffer)
+
+  res.json({ fileId })
+})
+
 
 /* ---------- 4. Auth Routes ---------- */
 
@@ -62,27 +100,44 @@ app.post("/api/auth/login", async (req, res) => {
 /* ---------- 5. Hero Routes ---------- */
 app.get("/api/hero", async (_, res) => {
   const hero = await db.collection("hero").findOne({})
-  res.json(hero || {})
+  if (!hero) return res.json({})
+  res.json(hero)
 })
 
+
+
+
 app.put("/api/hero", verifyToken, async (req, res) => {
-  const { name, brief, image, resume } = req.body
+  const { name, brief, resume, image } = req.body
   await db.collection("hero").deleteMany({})
-  await db.collection("hero").insertOne({ name, brief, image, resume })
+  await db.collection("hero").insertOne({ name, brief, resume, image })
   res.json({ message: "Hero updated" })
 })
 
+
+
 /* ---------- 6. Skills Routes ---------- */
+app.post("/api/skills", verifyToken, async (req, res) => {
+  const { name, iconId } = req.body;
+
+  if (!name || !iconId) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+
+  const iconUrl = `${process.env.SERVER_URL}/api/images/${iconId}`;
+  await db.collection("skills").insertOne({ name, icon: iconUrl });
+
+  res.json({ message: "Skill added" });
+});
+
+
+// Skills - Get all
 app.get("/api/skills", async (_, res) => {
   const skills = await db.collection("skills").find().toArray()
   res.json(skills)
 })
 
-app.post("/api/skills", verifyToken, async (req, res) => {
-  const { name, icon } = req.body
-  await db.collection("skills").insertOne({ name, icon })
-  res.json({ message: "Skill added" })
-})
+
 
 app.delete("/api/skills/:id", verifyToken, async (req, res) => {
   await db.collection("skills").deleteOne({ _id: new ObjectId(req.params.id) })
@@ -99,24 +154,71 @@ app.get("/api/projects", async (_, res) => {
   res.json(projects)
 })
 
-app.post("/api/projects", verifyToken, async (req, res) => {
-  const { title, description, image, github, live, order, stack } = req.body
-  await db.collection("projects").insertOne({
-    title,
-    description,
-    image,
-    github,
-    live,
-    order: Number(order),
-    stack,
-  })
-  res.json({ message: "Project added" })
+app.get("/api/images/:id", async (req, res) => {
+  try {
+    const id = req.params.id
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid image ID" })
+    }
+
+    const stream = getBucket().openDownloadStream(new ObjectId(id))
+    stream.on("error", () => {
+      res.status(404).json({ error: "Image not found" })
+    })
+    res.set("Content-Type", "image/jpeg") // or detect content type
+    stream.pipe(res)
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch image" })
+  }
 })
+
+
+
+app.post("/api/projects", verifyToken, upload.single("image"), async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      github,
+      live,
+      order,
+      stack
+    } = req.body
+
+    // Upload image to GridFS
+ const file = req.file
+if (!file) return res.status(400).json({ error: "Image file missing" })
+
+// Save file to GridFS
+const fileId = new ObjectId()
+await getBucket().openUploadStreamWithId(fileId, file.originalname).end(file.buffer)
+
+    await db.collection("projects").insertOne({
+      title,
+      description,
+      github,
+      live,
+      order: Number(order),
+      stack: JSON.parse(stack),
+      imageId: fileId
+    })
+
+    res.json({ message: "Project added" })
+  } catch (err) {
+    console.error("Upload error:", err)
+    res.status(500).json({ error: "Upload failed" })
+  }
+})
+
 
 app.delete("/api/projects/:id", verifyToken, async (req, res) => {
   await db.collection("projects").deleteOne({ _id: new ObjectId(req.params.id) })
   res.json({ message: "Project deleted" })
 })
+
+
+
+
 
 /* ---------- 8. Start ---------- */
 const PORT = process.env.PORT || 5000
