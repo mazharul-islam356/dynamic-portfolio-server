@@ -12,6 +12,7 @@ const upload = multer({ storage: multer.memoryStorage() }) // store in memory
 const getBucket = () => new GridFSBucket(db, { bucketName: "images" })
 
 
+
 /* ---------- 1. DB Setup ---------- */
 let db
 const client = new MongoClient(process.env.MONGO_URI)
@@ -217,7 +218,10 @@ app.delete("/api/projects/:id", verifyToken, async (req, res) => {
 })
 
 
-
+// Default route
+app.get("/", (req, res) => {
+  res.send("portfolio server is running")
+})
 
 
 /* ---------- 8. Start ---------- */
